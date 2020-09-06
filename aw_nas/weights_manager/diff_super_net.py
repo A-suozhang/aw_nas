@@ -5,18 +5,16 @@ Supernet for differentiable rollouts.
 import contextlib
 
 import torch
-from torch.nn import functional as F
 
 from aw_nas import assert_rollout_type, utils
-from aw_nas.rollout.base import DartsArch, DifferentiableRollout
-from aw_nas.utils import data_parallel, use_params
 from aw_nas.weights_manager.base import CandidateNet
 from aw_nas.weights_manager.shared import SharedNet, SharedCell, SharedOp
+from aw_nas.utils import data_parallel, use_params
 
 __all__ = ["DiffSubCandidateNet", "DiffSuperNet"]
 
 class DiffSubCandidateNet(CandidateNet):
-    def __init__(self, super_net, rollout: DifferentiableRollout, gpus=tuple(), virtual_parameter_only=True,
+    def __init__(self, super_net, rollout, gpus=tuple(), virtual_parameter_only=True,
                  eval_no_grad=True):
         super(DiffSubCandidateNet, self).__init__(eval_no_grad=eval_no_grad)
         self.super_net = super_net
@@ -46,43 +44,22 @@ class DiffSubCandidateNet(CandidateNet):
             del buffer_clone
 
     def forward(self, inputs, detach_arch=True): #pylint: disable=arguments-differ
-        if detach_arch:
-            arch = [
-                DartsArch(
-                    op_weights=op_weights.detach(),
-                    edge_norms=edge_norms.detach() if edge_norms is not None else None
-                ) for op_weights, edge_norms in self.arch
-            ]
-        else:
-            arch = self.arch
-
+        # import ipdb; ipdb.set_trace()
+        arch = [a.detach() for a in self.arch] if detach_arch else self.arch
         if not self.gpus or len(self.gpus) == 1:
             return self.super_net.forward(inputs, arch, detach_arch=detach_arch)
-
-        if arch[0].op_weights.ndimension() == 2:
-            arch = [
-                DartsArch(
-                    op_weights=a.op_weights.repeat(len(self.gpus), 1),
-                    edge_norms=(a.edge_norms.repeat(len(self.gpus)) \
-                     if a.edge_norms is not None else None))
-                for a in arch
-            ]
+        if arch[0].ndimension() == 2:
+            arch = [a.repeat([len(self.gpus), 1]) for a in arch]
         else:
             # Ugly fix for rollout_size > 1
             # call scatter here and stack...
             # split along dimension 1,
             # then concatenate along dimension 0 for `data_parallel` to scatter it again
             num_split = len(self.gpus)
-            rollout_batch_size = arch[0].op_weights.shape[1]
+            rollout_batch_size = arch[0].shape[1]
             assert rollout_batch_size % num_split == 0
             split_size = rollout_batch_size // num_split
-            # arch = [torch.cat(torch.split(a, split_size, dim=1), dim=0) for a in arch]
-            # Note: edge_norms (1-dim) do not support batch_size, just repeat
-            arch = [DartsArch(
-                op_weights=torch.cat(torch.split(a.op_weights, split_size, dim=1), dim=0),
-                edge_norms=(a.edge_norms.repeat(len(self.gpus)) \
-                            if a.edge_norms is not None else None))
-                    for a in arch]
+            arch = [torch.cat(torch.split(a, split_size, dim=1), dim=0) for a in arch]
         return data_parallel(self.super_net, (inputs, arch), self.gpus,
                              module_kwargs={"detach_arch": detach_arch})
 
@@ -118,7 +95,10 @@ class DiffSuperNet(SharedNet):
                  max_grad_norm=5.0, dropout_rate=0.1,
                  use_stem="conv_bn_3x3", stem_stride=1, stem_affine=True,
                  preprocess_op_type=None,
-                 cell_use_preprocess=True, cell_group_kwargs=None,
+                 cell_use_preprocess=True,
+                 inter_cell_shortcut=False,
+                 inter_cell_reduction_op_type=None,
+                 cell_group_kwargs=None,
                  candidate_virtual_parameter_only=False,
                  candidate_eval_no_grad=True):
         super(DiffSuperNet, self).__init__(
@@ -131,6 +111,8 @@ class DiffSuperNet(SharedNet):
             use_stem=use_stem, stem_stride=stem_stride, stem_affine=stem_affine,
             preprocess_op_type=preprocess_op_type,
             cell_use_preprocess=cell_use_preprocess,
+            inter_cell_shortcut=inter_cell_shortcut,
+            inter_cell_reduction_op_type=inter_cell_reduction_op_type,
             cell_group_kwargs=cell_group_kwargs)
 
         self.candidate_virtual_parameter_only = candidate_virtual_parameter_only
@@ -151,100 +133,49 @@ class DiffSharedCell(SharedCell):
     def num_out_channel(self):
         return self.num_out_channels * self._steps
 
-    def forward(self, inputs, arch, detach_arch=True):  # pylint: disable=arguments-differ
+    def forward(self, inputs, arch, detach_arch=True): #pylint: disable=arguments-differ
         assert self._num_init == len(inputs)
+        # import ipdb; ipdb.set_trace()
+        if self.inter_cell_shortcut: 
+            # import ipdb; ipdb.set_trace()
+            if self.layer_index != 0:
+                res = self.inter_cell_reduction_op(inputs[1])
+            else:
+                res = 0. # no shortcut for the 1st layer to avoid channel mismatch
         states = [op(_input) for op, _input in zip(self.preprocess_ops, inputs)]
         offset = 0
 
-        # in parallel forward, after scatter, a namedtuple will be come a normal tuple
-        arch = DartsArch(*arch)
-        use_edge_normalization = arch.edge_norms is not None
-
         for i_step in range(self._steps):
             to_ = i_step + self._num_init
-            if use_edge_normalization:
-                act_lst = [
-                    arch.edge_norms[offset + from_] *  # edge norm factor scalar on this edge
-                    self.edges[from_][to_](
-                        state,
-                        arch.op_weights[offset + from_],  # op weights vector on this edge
-                        detach_arch=detach_arch
-                    )
-                    for from_, state in enumerate(states)
-                ]
-            else:
-                act_lst = [
-                    self.edges[from_][to_](
-                        state, arch.op_weights[offset + from_], detach_arch=detach_arch
-                    )
-                    for from_, state in enumerate(states)
-                ]
+            act_lst = [self.edges[from_][to_](state, arch[offset+from_],
+                                              detach_arch=detach_arch) \
+                       for from_, state in enumerate(states)]
             new_state = sum(act_lst)
             offset += len(states)
             states.append(new_state)
-        return torch.cat(states[-self._steps:], dim=1)
-
+        offset = 0
+        if self.inter_cell_shortcut:
+            out = torch.cat(states[-self._steps:], dim=1) + res 
+        else:
+            out = torch.cat(states[-self._steps:], dim=1)
+        return out
 
 class DiffSharedOp(SharedOp):
-    def forward(self, x, weights, detach_arch=True):  # pylint: disable=arguments-differ
+    def forward(self, x, weights, detach_arch=True): #pylint: disable=arguments-differ
         if weights.ndimension() == 2:
             # weights: (batch_size, num_op)
             if not weights.shape[0] == x.shape[0]:
                 # every `x.shape[0] % weights.shape[0]` data use the same sampled arch weights
                 assert x.shape[0] % weights.shape[0] == 0
                 weights = weights.repeat(x.shape[0] // weights.shape[0], 1)
-            return sum(
-                [
-                    weights[:, i].reshape(-1, 1, 1, 1) * op(x)
-                    for i, op in enumerate(self.p_ops)
-                ]
-            )
+            return sum([weights[:, i].reshape(-1, 1, 1, 1) * op(x)
+                        for i, op in enumerate(self.p_ops)])
 
-        out_act: torch.Tensor = 0.0
+        out_act = 0.
         # weights: (num_op)
-        if self.partial_channel_proportion is None:
-            for w, op in zip(weights, self.p_ops):
-                if detach_arch and w.item() == 0:
-                    continue
-                act = op(x).detach_() if w.item() == 0 else op(x)
-                out_act += w * act
-        else:
-            op_channels = x.shape[1] // self.partial_channel_proportion
-            x_1 = x[:, :op_channels, :, :]  # these channels goes through op
-            x_2 = x[:, op_channels:, :, :]  # these channels skips op
-
-            # apply pooling if the ops have stride=2
-            if self.stride == 2:
-                x_2 = F.max_pool2d(x_2, 2, 2)
-
-            for w, op in zip(weights, self.p_ops):
-                # if detach_arch and w.item() == 0:
-                #     continue  # not really sure about this
-                act = op(x_1)
-
-                # if w.item() == 0:
-                #     act.detach_()  # not really sure about this either
-                out_act += w * act
-
-            out_act = torch.cat((out_act, x_2), dim=1)
-
-            # PC-DARTS implements a deterministic channel_shuffle() (not what they said in the paper)
-            # ref: https://github.com/yuhuixu1993/PC-DARTS/blob/b74702f86c70e330ce0db35762cfade9df026bb7/model_search.py#L9
-            out_act = self._channel_shuffle(out_act, self.partial_channel_proportion)
-
-            # this is the random channel shuffle for now
-            # channel_perm = torch.randperm(out_act.shape[1])
-            # out_act = out_act[:, channel_perm, :, :]
-
+        for w, op in zip(weights, self.p_ops):
+            if detach_arch and w.item() == 0:
+                continue
+            act = op(x).detach_() if w.item() == 0 else op(x)
+            out_act += w * act
         return out_act
-
-    @staticmethod
-    def _channel_shuffle(x: torch.Tensor, groups: int):
-        """channel shuffle for PC-DARTS"""
-        n, c, h, w = x.shape
-
-        x = x.view(n, groups, -1, h, w).transpose(1, 2).contiguous()
-
-        x = x.view(n, c, h, w).contiguous()
-
-        return x

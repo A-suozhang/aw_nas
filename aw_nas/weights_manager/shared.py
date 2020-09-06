@@ -11,7 +11,7 @@ from torch import nn
 from aw_nas import ops
 from aw_nas.weights_manager.base import BaseWeightsManager
 from aw_nas.utils.common_utils import Context
-from aw_nas.utils.exception import expect, ConfigException
+from aw_nas.utils.exception import expect
 
 class SharedNet(BaseWeightsManager, nn.Module):
     def __init__(self, search_space, device, rollout_type,
@@ -24,6 +24,8 @@ class SharedNet(BaseWeightsManager, nn.Module):
                  cell_use_preprocess=True,
                  preprocess_kernel=1,
                  preprocess_type="relu_conv_bn",
+                 inter_cell_shortcut=False,
+                 inter_cell_reduction_op_type=None,
                  cell_group_kwargs=None):
         super(SharedNet, self).__init__(search_space, device, rollout_type)
         nn.Module.__init__(self)
@@ -40,6 +42,9 @@ class SharedNet(BaseWeightsManager, nn.Module):
         self.use_stem = use_stem
         # possible cell group kwargs
         self.cell_group_kwargs = cell_group_kwargs
+        # possible inter-cell shortcut
+        self.inter_cell_shortcut = inter_cell_shortcut
+        self.inter_cell_reduction_op_type = inter_cell_reduction_op_type
 
         # training
         self.max_grad_norm = max_grad_norm
@@ -101,6 +106,8 @@ class SharedNet(BaseWeightsManager, nn.Module):
                             prev_strides=init_strides + strides[:i_layer],
                             use_preprocess=cell_use_preprocess,
                             preprocess_op_type=preprocess_op_type,
+                            inter_cell_shortcut=inter_cell_shortcut,
+                            inter_cell_reduction_op_type=inter_cell_reduction_op_type,
                             **kwargs)
             prev_num_channel = cell.num_out_channel()
             prev_num_channels.append(prev_num_channel)
@@ -205,7 +212,7 @@ class SharedNet(BaseWeightsManager, nn.Module):
 
 class SharedCell(nn.Module):
     def __init__(self, op_cls, search_space, layer_index, num_channels, num_out_channels,
-                 prev_num_channels, stride, prev_strides, use_preprocess, preprocess_op_type,
+                 prev_num_channels, stride, prev_strides, use_preprocess, preprocess_op_type, inter_cell_shortcut, inter_cell_reduction_op_type,
                  **op_kwargs):
         super(SharedCell, self).__init__()
         self.search_space = search_space
@@ -216,6 +223,8 @@ class SharedCell(nn.Module):
         self.layer_index = layer_index
         self.use_preprocess = use_preprocess
         self.preprocess_op_type = preprocess_op_type
+        self.inter_cell_shortcut = inter_cell_shortcut  # only works when using differentiable
+        self.inter_cell_reduction_op_type = inter_cell_reduction_op_type
         self.op_kwargs = op_kwargs
 
         self._steps = self.search_space.get_layer_num_steps(layer_index)
@@ -251,9 +260,10 @@ class SharedCell(nn.Module):
                 continue
             if self.preprocess_op_type is not None:
                 # specificy other preprocess op
+                # import ipdb; ipdb.set_trace()
                 preprocess = ops.get_op(self.preprocess_op_type)(C=prev_c,
                                                                  C_out=num_channels,
-                                                                 stride=prev_s,
+                                                                 stride=int(prev_s),  # FIXME: ugly hot fix, sometimes prev_s is np.int64
                                                                  affine=False)
             else:
                 if prev_s > 1:
@@ -270,6 +280,21 @@ class SharedCell(nn.Module):
                                                 padding=0,
                                                 affine=False)
             self.preprocess_ops.append(preprocess)
+        if self.inter_cell_shortcut:
+            if stride == 1:
+                self.inter_cell_reduction_op = ops.get_op("identity")()
+            elif self.inter_cell_reduction_op_type is not None:
+                self.inter_cell_reduction_op = ops.get_op(self.inter_cell_reduction_op_type)(
+                                                                C = prev_c,
+                                                                C_out = num_channels*4,
+                                                                stride = self.stride,
+                                                                affine = True,)
+            else:
+                 self.inter_cell_reduction_op = ops.get_op("skip_connect")(
+                                                               C = prev_c,
+                                                                C_out = num_channels*4,
+                                                                stride = self.stride,
+                                                                affine = True,)
         assert len(self.preprocess_ops) == self._num_init
 
         self.edges = defaultdict(dict)
@@ -296,30 +321,19 @@ class SharedCell(nn.Module):
             from_, to_ = self._edge_name_pattern.match(edge_name).groups()
             self.edges[int(from_)][int(to_)] = edge_mod
 
-
 class SharedOp(nn.Module):
     """
     The operation on an edge, consisting of multiple primitives.
     """
-    def __init__(self, C, C_out, stride, primitives, partial_channel_proportion=None):
-        super(SharedOp, self).__init__()
 
+    def __init__(self, C, C_out, stride, primitives):
+        super(SharedOp, self).__init__()
         self.primitives = primitives
         self.stride = stride
-        self.partial_channel_proportion = partial_channel_proportion
-
-        if self.partial_channel_proportion is not None:
-            expect(C % self.partial_channel_proportion == 0,
-                   "partial_channel_proportion must be divisible by #channels", ConfigException)
-            expect(C_out % self.partial_channel_proportion == 0,
-                   "partial_channel_proportion must be divisible by #channels", ConfigException)
-            C = C // self.partial_channel_proportion
-            C_out = C_out // self.partial_channel_proportion
-
         self.p_ops = nn.ModuleList()
         for primitive in self.primitives:
             op = ops.get_op(primitive)(C, C_out, stride, False)
             if "pool" in primitive:
-                op = nn.Sequential(op, nn.BatchNorm2d(C_out, affine=False))
-
+                op = nn.Sequential(op, nn.BatchNorm2d(C_out,
+                                                      affine=False))
             self.p_ops.append(op)

@@ -1,0 +1,41 @@
+# ---- Arch 0 (Reward 0.8154069749290681) ----
+- CNNGenotype(normal_0=[('max_pool_3x3', 1, 2), ('xnor_dil_conv_5x5', 0, 2), ('skip_connect',
+  1, 3), ('xnor_dil_conv_5x5', 2, 3), ('max_pool_3x3', 1, 4), ('max_pool_3x3', 0,
+  4), ('max_pool_3x3', 2, 5), ('max_pool_3x3', 0, 5)], reduce_1=[('xnor_dil_conv_5x5',
+  0, 2), ('xnor_dil_conv_3x3', 1, 2), ('xnor_dil_conv_5x5', 2, 3), ('max_pool_3x3',
+  0, 3), ('max_pool_3x3', 1, 4), ('max_pool_3x3', 0, 4), ('xnor_dil_conv_5x5', 2,
+  5), ('xnor_dil_conv_5x5', 4, 5)], normal_0_concat=[2, 3, 4, 5], reduce_1_concat=[2,
+  3, 4, 5])
+
+# ---- Arch 1 (Reward 0.7552661164032529) ----
+- CNNGenotype(normal_0=[('avg_pool_3x3', 0, 2), ('xnor_dil_conv_5x5', 1, 2), ('max_pool_3x3',
+  0, 3), ('skip_connect', 1, 3), ('none', 2, 4), ('max_pool_3x3', 0, 4), ('none',
+  2, 5), ('xnor_dil_conv_5x5', 4, 5)], reduce_1=[('xnor_dil_conv_5x5', 1, 2), ('avg_pool_3x3',
+  0, 2), ('xnor_dil_conv_5x5', 2, 3), ('avg_pool_3x3', 1, 3), ('xnor_dil_conv_5x5',
+  2, 4), ('avg_pool_3x3', 1, 4), ('max_pool_3x3', 0, 5), ('xnor_dil_conv_5x5', 3,
+  5)], normal_0_concat=[2, 3, 4, 5], reduce_1_concat=[2, 3, 4, 5])
+
+# ---- Arch 2 (Reward 0.7484649892353341) ----
+- CNNGenotype(normal_0=[('xnor_conv_5x5', 1, 2), ('max_pool_3x3', 0, 2), ('xnor_dil_conv_3x3',
+  0, 3), ('none', 2, 3), ('max_pool_3x3', 0, 4), ('none', 2, 4), ('skip_connect',
+  1, 5), ('max_pool_3x3', 0, 5)], reduce_1=[('avg_pool_3x3', 0, 2), ('none', 1, 2),
+  ('max_pool_3x3', 0, 3), ('avg_pool_3x3', 1, 3), ('xnor_dil_conv_5x5', 3, 4), ('max_pool_3x3',
+  0, 4), ('xnor_dil_conv_5x5', 3, 5), ('max_pool_3x3', 0, 5)], normal_0_concat=[2,
+  3, 4, 5], reduce_1_concat=[2, 3, 4, 5])
+
+# ---- Arch 3 (Reward 0.7282127907209079) ----
+- CNNGenotype(normal_0=[('skip_connect', 1, 2), ('xnor_dil_conv_5x5', 0, 2), ('max_pool_3x3',
+  0, 3), ('max_pool_3x3', 1, 3), ('skip_connect', 3, 4), ('max_pool_3x3', 0, 4), ('none',
+  2, 5), ('xnor_conv_5x5', 3, 5)], reduce_1=[('avg_pool_3x3', 0, 2), ('avg_pool_3x3',
+  1, 2), ('max_pool_3x3', 0, 3), ('avg_pool_3x3', 2, 3), ('max_pool_3x3', 0, 4), ('xnor_dil_conv_5x5',
+  2, 4), ('max_pool_3x3', 0, 5), ('xnor_dil_conv_5x5', 4, 5)], normal_0_concat=[2,
+  3, 4, 5], reduce_1_concat=[2, 3, 4, 5])
+
+# ---- Arch 4 (Reward 0.7128886737482018) ----
+- CNNGenotype(normal_0=[('xnor_conv_3x3', 1, 2), ('max_pool_3x3', 0, 2), ('none',
+  2, 3), ('max_pool_3x3', 0, 3), ('none', 2, 4), ('xnor_dil_conv_5x5', 3, 4), ('none',
+  2, 5), ('xnor_conv_3x3', 0, 5)], reduce_1=[('avg_pool_3x3', 0, 2), ('xnor_dil_conv_3x3',
+  1, 2), ('max_pool_3x3', 0, 3), ('xnor_dil_conv_5x5', 2, 3), ('max_pool_3x3', 0,
+  4), ('max_pool_3x3', 1, 4), ('max_pool_3x3', 0, 5), ('max_pool_3x3', 1, 5)], normal_0_concat=[2,
+  3, 4, 5], reduce_1_concat=[2, 3, 4, 5])
+
